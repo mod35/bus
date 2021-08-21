@@ -5,7 +5,7 @@ import { BUS_REDIS_INTERNAL_SYMBOLS, BUS_REDIS_SYMBOLS } from './bus-redis-symbo
 import { LOGGER_SYMBOLS, Logger } from '@node-ts/logger-core'
 import Redis from 'ioredis'
 import { RedisTransportConfiguration } from './redis-transport-configuration'
-import { Job, Queue, Worker } from 'bullmq'
+import { Job, Queue, QueueScheduler, Worker } from 'bullmq'
 import * as uuid from 'uuid'
 
 export const DEFAULT_MAX_RETRIES = 10
@@ -18,6 +18,7 @@ interface Payload {
   correlationId: Uuid | undefined
   attributes: MessageAttributeMap
   stickyAttributes: MessageAttributeMap
+  priority: number | undefined
 }
 export interface RedisMessage {
   /**
@@ -45,9 +46,11 @@ export class RedisMqTransport implements Transport<RedisMessage> {
 
   private queueConnection: Connection
   private workerConnection: Connection
+  private schedulerConnection: Connection
   private queue: Queue
   private worker: Worker
   private maxRetries: number
+  private token: Uuid
 
   constructor (
     @inject(BUS_REDIS_INTERNAL_SYMBOLS.RedisFactory)
@@ -65,19 +68,23 @@ export class RedisMqTransport implements Transport<RedisMessage> {
     this.logger.info('Initializing Redis transport')
     this.queueConnection = await this.connectionFactory()
     this.workerConnection = await this.connectionFactory()
+    // this.schedulerConnection = await this.connectionFactory()
+    this.token = uuid.v4()
     this.queue = new Queue(this.configuration.queueName, {
       connection: this.queueConnection
     })
-
-    this.worker = new Worker(this.configuration.queueName, undefined, {connection: this.workerConnection})
+    this.worker = new Worker(this.configuration.queueName, undefined, {connection: this.workerConnection, concurrency: 1})
+    // this.queueScheduler = new QueueScheduler(this.configuration.queueName, {connection: this.schedulerConnection})
     this.logger.info('Redis transport initialized')
   }
 
   async dispose (): Promise<void> {
-    await this.worker.close()
+    // await this.worker.close()
     await this.queue.close()
+    // await this.queueScheduler.close()
     this.queueConnection.disconnect()
     this.workerConnection.disconnect()
+    // this.schedulerConnection.disconnect()
     this.logger.info('Redis transport disposed')
   }
 
@@ -105,16 +112,21 @@ export class RedisMqTransport implements Transport<RedisMessage> {
   }
 
   async readNextMessage (): Promise<TransportMessage<RedisMessage> | undefined> {
-    // Guide on how to manually handle jobs: https://docs.bullmq.io/patterns/manually-fetching-jobs
+    // NOTE: Seems to be an issue with using the same worker for getting the next job, seems to be a bug that lifts ever other job
+    // For now I'm just creating and closing workers - no doubt inefficient
 
+    // Guide on how to manually handle jobs: https://docs.bullmq.io/patterns/manually-fetching-jobs
+    // const worker = new Worker(this.configuration.queueName, undefined, {connection: this.schedulerConnection, concurrency: 1})
     /*
       token is not a unique identifier for the message, but a way of identifying that this worker
       has a lock on this job
     */
-    const token = uuid.v4()
-    const job = (await this.worker.getNextJob(token)) as Job<Payload> | undefined
+    // const token = uuid.v4()
+    const job = await this.worker.getNextJob(this.token) as Job<Payload> | undefined
+    // await worker.close()
 
     if (!job || !job.data) {
+      this.logger.debug('no message received', job)
       return undefined
     }
 
@@ -125,7 +137,7 @@ export class RedisMqTransport implements Transport<RedisMessage> {
     return {
       id: job.id,
       domainMessage,
-      raw: {job, token},
+      raw: {job, token: this.token},
       attributes
     }
   }
@@ -166,13 +178,16 @@ export class RedisMqTransport implements Transport<RedisMessage> {
       message: this.messageSerializer.serialize(message),
       correlationId: messageOptions.correlationId,
       attributes: messageOptions.attributes,
-      stickyAttributes: messageOptions.stickyAttributes
+      stickyAttributes: messageOptions.stickyAttributes,
+      priority: messageOptions.priority ?? undefined
     }
-    this.logger.debug('Sending message to Redis', {payload})
+    this.logger.debug('Sending message to Redis', {message})
     await this.queue.add(message.$name, payload, {
       jobId: uuid.v4(),
       attempts: this.maxRetries,
-      removeOnComplete: true
+      removeOnComplete: true,
+      priority: messageOptions.priority ?? undefined
     })
+    this.logger.debug('Message added!')
   }
 }

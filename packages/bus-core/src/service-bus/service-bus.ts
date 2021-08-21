@@ -166,6 +166,7 @@ export class ServiceBus implements Bus {
 
   private prepareTransportOptions (clientOptions: MessageAttributes): MessageAttributes {
     const result: MessageAttributes = {
+      priority: clientOptions.priority,
       correlationId: clientOptions.correlationId || this.messageHandlingContext.correlationId,
       attributes: clientOptions.attributes,
       stickyAttributes: {

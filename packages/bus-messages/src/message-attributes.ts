@@ -13,6 +13,13 @@ export class MessageAttributes<
   StickyAttributeType extends MessageAttributeMap = MessageAttributeMap
 > {
   /**
+   * The ability to change the priority of the message within the queue.
+   * Useful for events that trigger message producers that want to be processed
+   * in some sort of relative order. Check the message transport to see if this
+   * feature is supported.
+   */
+  priority?: number
+  /**
    * An identifier that can be used to relate or group messages together.
    * This value is sticky, in that any messages that are sent as a result
    * of receiving one message will be sent out with this same correlationId.
@@ -44,10 +51,12 @@ export class MessageAttributes<
   constructor (properties?: {
     correlationId?: Uuid,
     attributes?: AttributeType,
-    stickyAttributes?: StickyAttributeType
+    stickyAttributes?: StickyAttributeType,
+    priority?: number
   }) {
     this.attributes = {} as AttributeType
     this.stickyAttributes = {} as StickyAttributeType
+    this.priority = this.priority
 
     if (!!properties) {
       const { correlationId, attributes, stickyAttributes } = properties
